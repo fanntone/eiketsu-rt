@@ -10,6 +10,14 @@
 
 > 本專案**不包含遊戲本體**。你需要自備《三國志英傑傳》DOS 中文版的遊戲檔案。
 
+## 畫面
+
+| 戰場功能選單多了「存檔」「讀檔」 | 10 格存檔，寫著哪一場、第幾回合 |
+|:---:|:---:|
+| ![戰場功能選單：存檔、讀檔](docs/screenshots/battle-menu.png) | ![10 格讀檔清單](docs/screenshots/load-list.png) |
+
+![汜水關之戰](docs/screenshots/battlefield.png)
+
 ---
 
 ## 準備
