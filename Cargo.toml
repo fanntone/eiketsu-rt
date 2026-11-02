@@ -1,0 +1,17 @@
+[package]
+name = "eiketsu-rt"
+version = "0.1.0"
+edition = "2021"
+description = "Native DOS runtime for KOEI Sangokushi Eiketsuden (Chinese DOS release): runs the original real-mode code with Rust-implemented DOS, BIOS, VGA and OPL2"
+
+[dependencies]
+minifb = "0.27"
+cpal = "0.15"
+encoding_rs = "0.8"
+
+[profile.release]
+opt-level = 3
+debug = 1
+
+[profile.dev]
+opt-level = 2

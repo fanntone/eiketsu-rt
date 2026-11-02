@@ -1,0 +1,11 @@
+# build output (target, target2, ... from parallel builds)
+/target*
+# test screenshots
+/harness/out
+# debugging output (EIKETSU_DUMP) and local runs
+dump.bin
+trace.txt
+*.state
+*.key
+journal/
+savestates/

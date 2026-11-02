@@ -1,0 +1,4 @@
+*.command text eol=lf
+*.bat text eol=crlf
+*.bin binary
+*.R3S binary

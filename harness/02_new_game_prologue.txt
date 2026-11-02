@@ -1,0 +1,8 @@
+# 主線：標題選單 → 點「開始新遊戲」→ 序章標題 → 董卓插圖與劇情對白。
+# 這條路徑曾因 BIOS INT 8 沒保存 DS（MAIN 的 INT 1Ch 會改 DS）而當機。
+9000  key A
+9600  key ENTER
+14000 click 320 187            # 開始新遊戲
+17000 expect chapter_title     f4d72a9cca685e35
+30000 expect prologue_dongzhuo ff96442530bc8b2d
+30001 quit
