@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="英傑傳">
+<meta name="theme-color" content="#14110d">
+<title>三國志英傑傳</title>
+<style>
+  :root {
+    --bg: #14110d;
+    --panel: #221c15;
+    --line: #4a3b28;
+    --text: #efe6d4;
+    --muted: #b3a58c;
+    --accent: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+  button, .btn { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:active { background: #33291d; }
+  button:disabled { opacity: .45; cursor: default; }
+  .primary { background: var(--accent); color: #1b140a; border-color: var(--accent); font-weight: 700; }
+  [hidden] { display: none !important; }
+
+  /* setup */
+  #setup { max-width: 560px; margin: 0 auto; padding: 32px 16px 48px; line-height: 1.7; }
+  #setup h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: 2px; }
+  #setup .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 16px 0; }
+  .card h2 { font-size: 17px; margin: 0 0 8px; color: var(--accent); }
+  .card ol, .card ul { margin: 0; padding-left: 20px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .btn input { display: none; }
+  #start { width: 100%; font-size: 18px; padding: 14px; margin-top: 8px; }
+  #status { min-height: 1.7em; color: var(--muted); margin-top: 8px; }
+  #have { margin: 0; }
+  small { color: var(--muted); }
+
+  /* game */
+  #game { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  /* Smooth scaling blends the game's dithered colours the way a monitor does. */
+  #screen { touch-action: none; background: #000; }
+  #bar { display: flex; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); justify-content: center;
+    flex-wrap: wrap; background: #0d0b08; border-top: 1px solid var(--line); }
+  #bar button { padding: 8px 12px; font-size: 15px; }
+  @media (orientation: landscape) and (max-height: 600px) {
+    #game { flex-direction: row; }
+    #bar { flex-direction: column; justify-content: center; border-top: 0; border-left: 1px solid var(--line);
+      padding: 8px calc(6px + env(safe-area-inset-right)) 8px 6px; flex-wrap: nowrap; }
+    #bar button { padding: 8px 10px; font-size: 14px; }
+  }
+  #speed { position: fixed; top: 6px; left: 8px; color: #ffcf6e; font-size: 12px; pointer-events: none; }
+  #toast, #err { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: rgba(20,17,13,.92);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; pointer-events: none; }
+  #err { top: 40%; pointer-events: auto; color: #ffb4a8; white-space: pre-wrap; max-width: 90vw; }
+</style>
+</head>
+<body>
+
+<main id="setup" hidden>
+  <h1>三國志英傑傳</h1>
+  <p class="sub">在瀏覽器裡玩 DOS 中文版。iPhone、iPad、Android、電腦都可以。</p>
+
+  <div class="card">
+    <h2>① 匯入你的遊戲檔</h2>
+    <p style="margin:0">本網站<b>不提供遊戲本體</b>，請用你自己的《三國志英傑傳》DOS 中文版遊戲資料夾（裡面有 <code>REKO3.COM</code>）。</p>
+    <ul>
+      <li><b>手機最方便</b>：在電腦上把遊戲資料夾壓成 <b>zip</b>，傳到手機（iCloud 雲碟、LINE 自己的 Keep…），在這裡選那個 zip。</li>
+      <li>或一次選取資料夾裡的所有檔案；電腦上也可以直接選資料夾。</li>
+    </ul>
+    <div class="row">
+      <label class="btn">選擇 zip 或檔案<input id="pick" type="file" multiple></label>
+      <label class="btn">選擇資料夾（電腦）<input id="pickdir" type="file" webkitdirectory></label>
+    </div>
+    <div id="status"></div>
+    <p id="have"></p>
+    <small>檔案只存在這台裝置的瀏覽器裡，不會上傳到任何地方。也可以在這裡匯入之前匯出的存檔 zip。</small>
+  </div>
+
+  <div class="card">
+    <h2>② 開始</h2>
+    <button id="start" class="primary" disabled>開始遊戲</button>
+  </div>
+
+  <div class="card">
+    <h2>怎麼玩</h2>
+    <ul>
+      <li><b>點一下</b> = 滑鼠左鍵。<b>兩指點一下</b>或按下方的 <b>「取消」</b> = 右鍵。</li>
+      <li>開頭要「輸入密碼」：按下方的 <b>「密碼」</b> 就會自動通過。</li>
+      <li>戰場上「功能」選單裡可以隨時<b>存檔／讀檔</b>；每次我方回合結束會自動存到第 10 格。</li>
+      <li>手機建議<b>橫放</b>，並用 Safari 的「分享 → 加入主畫面」，就能全螢幕遊玩。</li>
+      <li>存檔存在這個瀏覽器裡。換手機或清除瀏覽器資料前，記得按 <b>「匯出存檔」</b>。</li>
+    </ul>
+  </div>
+  <p><button id="reset" hidden>清除這個瀏覽器裡的遊戲檔與存檔</button></p>
+</main>
+
+<div id="game" hidden>
+  <div id="stage"><canvas id="screen" width="640" height="480"></canvas></div>
+  <nav id="bar">
+    <button id="b-right">取消</button>
+    <button id="b-enter">Enter</button>
+    <button id="b-password">密碼</button>
+    <button id="b-mute">🔊</button>
+    <button id="b-full">全螢幕</button>
+    <button id="b-export">匯出存檔</button>
+  </nav>
+  <div id="speed"></div>
+  <div id="toast" hidden></div>
+  <div id="err" hidden></div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

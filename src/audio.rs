@@ -1,18 +1,34 @@
 //! Audio output (cpal: WASAPI / CoreAudio / ALSA). The OPL2 synthesizer runs on the
 //! audio thread; the emulator hands it register writes through `sink`.
 
-use crate::opl::{Sink, Synth};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::{Arc, Mutex};
+use crate::opl::Sink;
 
+#[cfg(feature = "native")]
 pub struct Audio {
     pub sink: Sink,
     _stream: cpal::Stream,
 }
 
+/// Built without native audio (the web build feeds its own synthesizer).
+#[cfg(not(feature = "native"))]
+pub struct Audio {
+    pub sink: Sink,
+}
+
+#[cfg(not(feature = "native"))]
+impl Audio {
+    pub fn open() -> Option<Audio> {
+        None
+    }
+}
+
+#[cfg(feature = "native")]
 impl Audio {
     /// None when there is no output device (the game still runs, silently).
     pub fn open() -> Option<Audio> {
+        use crate::opl::Synth;
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use std::sync::{Arc, Mutex};
         let dev = cpal::default_host().default_output_device()?;
         let cfg = dev.default_output_config().ok()?;
         let rate = cfg.sample_rate().0;

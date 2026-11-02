@@ -130,6 +130,10 @@ pub struct Machine {
     /// The visible picture (4 planes) while a save/load list is open, put back
     /// when it closes (see saveui.rs). Part of save states.
     pub saveui_screen: Option<Vec<u8>>,
+    /// Return from `run` right after a save state was loaded mid-run (the clock
+    /// jumped): a host that runs the machine in time slices (the web build) would
+    /// otherwise run on until the old step budget.
+    pub stop_on_load: bool,
     /// Save states loaded this session (each starts a new journal file).
     loads: u32,
 }
@@ -187,6 +191,7 @@ impl Machine {
             bot_mode: false,
             saveui_last: None,
             saveui_screen: None,
+            stop_on_load: false,
             loads: 0,
         };
         m.mem.trace_ports = std::env::var("EIKETSU_TRACE_PORTS").is_ok();
@@ -557,9 +562,8 @@ impl Machine {
         if let Some(d) = p.parent() {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
-        let tmp = p.with_extension("tmp");
-        self.save_state(&tmp)?;
-        std::fs::rename(&tmp, p).map_err(|e| format!("{}: {e}", p.display()))
+        let b = self.state_bytes();
+        crate::replace_file(p, &b)
     }
 
     /// Replace the running machine with a saved one while the session goes on.
@@ -576,6 +580,9 @@ impl Machine {
         self.cfg.script = script;
         self.mem.opl.resync();
         self.rotate_journal(p);
+        if self.stop_on_load {
+            self.stop = Some(Stop::Budget);
+        }
         Ok(())
     }
 
@@ -1477,6 +1484,11 @@ impl Machine {
     /// Everything needed to continue this session later: CPU, memory, devices,
     /// DOS (open files by name + position), mouse driver, journal so far.
     pub fn save_state(&mut self, path: &std::path::Path) -> R<()> {
+        let b = self.state_bytes();
+        std::fs::write(path, &b).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    fn state_bytes(&mut self) -> Vec<u8> {
         let mut w = crate::ser::W::new();
         w.str("eiketsu-state-3");
         self.cpu.save(&mut w);
@@ -1491,7 +1503,7 @@ impl Machine {
             Some(v) => { w.u8(1); w.bytes(v) }
             None => w.u8(0),
         }
-        std::fs::write(path, &w.0).map_err(|e| format!("{}: {e}", path.display()))
+        w.0
     }
 
     pub fn load_state(&mut self, path: &std::path::Path) -> R<()> {

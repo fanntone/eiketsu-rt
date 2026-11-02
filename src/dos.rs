@@ -106,21 +106,6 @@ fn is_83(name: &str) -> bool {
     !n.is_empty() && n.len() <= 8 && e.len() <= 3 && !e.contains('.') && name.is_ascii() && !name.contains(' ')
 }
 
-impl Clone for Kind {
-    fn clone(&self) -> Kind {
-        match self {
-            Kind::Con => Kind::Con,
-            Kind::File(f) => Kind::File(f.try_clone().expect("duplicate file handle")),
-        }
-    }
-}
-
-impl Clone for Sft {
-    fn clone(&self) -> Sft {
-        Sft { kind: self.kind.clone(), refs: self.refs, name: self.name.clone() }
-    }
-}
-
 impl Clone for Dos {
     fn clone(&self) -> Dos {
         Dos {
@@ -128,7 +113,19 @@ impl Clone for Dos {
             cwd: self.cwd.clone(),
             psp: self.psp,
             dta: self.dta,
-            sft: self.sft.clone(),
+            // Open files are opened again by name (at the same position) rather
+            // than duplicated: WASI (the web build) cannot duplicate a handle.
+            sft: self.sft.iter().map(|s| s.as_ref().map(|s| Sft {
+                kind: match &s.kind {
+                    Kind::Con => Kind::Con,
+                    Kind::File(f) => {
+                        let pos = (&*f).stream_position().unwrap_or(0);
+                        Kind::File(self.reopen(&s.name, pos).unwrap_or_else(|e| panic!("snapshot: {e}")))
+                    }
+                },
+                refs: s.refs,
+                name: s.name.clone(),
+            })).collect(),
             procs: self.procs.clone(),
             last_ret: self.last_ret,
             last_err: self.last_err,
@@ -149,6 +146,15 @@ impl Dos {
             }
         }
         out
+    }
+
+    /// Open a file of an open handle again (read-write if allowed) at `pos`.
+    fn reopen(&self, name: &str, pos: u64) -> Result<File, String> {
+        let path = self.resolve(name.as_bytes());
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&path)
+            .or_else(|_| File::open(&path)).map_err(|e| format!("reopen {}: {e}", path.display()))?;
+        f.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+        Ok(f)
     }
 
     pub fn seek_files(&mut self, pos: &[(usize, u64)]) {
@@ -642,6 +648,7 @@ fn open_file(m: &mut Machine, raw: &[u8], mode: u8, create: bool, excl: bool) {
         return err(m, 0x50);
     }
     let f = if create {
+        crate::note_fs_write();
         File::create(&path)
     } else {
         std::fs::OpenOptions::new().read(true).write(mode & 3 != 0).open(&path)
@@ -947,6 +954,7 @@ pub fn int21(m: &mut Machine) -> R<bool> {
                         let pos = f.stream_position().unwrap_or(0);
                         f.set_len(pos).map(|_| 0)
                     } else {
+                        crate::note_fs_write();
                         f.write_all(&buf).map(|_| n)
                     }
                 }
@@ -958,6 +966,7 @@ pub fn int21(m: &mut Machine) -> R<bool> {
         }
         0x41 => {
             let p = m.dos.resolve(&name_at(m, DS, m.dx()));
+            crate::note_fs_write();
             if std::fs::remove_file(&p).is_ok() { ok(m) } else { err(m, 2) }
         }
         0x42 => {
@@ -1099,6 +1108,7 @@ pub fn int21(m: &mut Machine) -> R<bool> {
         0x56 => {
             let a = m.dos.resolve(&name_at(m, DS, m.dx()));
             let b = m.dos.resolve(&name_at(m, ES, m.di()));
+            crate::note_fs_write();
             if std::fs::rename(&a, &b).is_ok() { ok(m) } else { err(m, 5) }
         }
         0x57 => {
@@ -1200,10 +1210,7 @@ impl Dos {
                 1 => { let refs = r.u16()?; let name = r.str()?; Some(Sft { kind: Kind::Con, refs, name }) }
                 _ => {
                     let refs = r.u16()?; let name = r.str()?; let pos = r.u64()?;
-                    let path = self.resolve(name.as_bytes());
-                    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&path)
-                        .or_else(|_| File::open(&path)).map_err(|e| format!("reopen {}: {e}", path.display()))?;
-                    f.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+                    let f = self.reopen(&name, pos)?;
                     Some(Sft { kind: Kind::File(f), refs, name })
                 }
             });

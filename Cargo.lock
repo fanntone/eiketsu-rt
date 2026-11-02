@@ -215,6 +215,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eiketsu-web"
+version = "0.1.0"
+dependencies = [
+ "eiketsu-rt",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

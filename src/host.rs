@@ -1,6 +1,7 @@
 //! Native window (minifb: Windows / macOS / Linux): shows the VGA picture scaled to
 //! the window and turns host input into PC input (scancodes, mouse driver state).
 
+#[cfg(feature = "native")]
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 
 #[derive(Clone, Debug)]
@@ -12,6 +13,7 @@ pub enum Event {
     Key { sc: u16, down: bool },
 }
 
+#[cfg(feature = "native")]
 pub struct Host {
     win: Window,
     last_mouse: (i32, i32, u16),
@@ -20,6 +22,7 @@ pub struct Host {
     buf: Vec<u32>,
 }
 
+#[cfg(feature = "native")]
 fn scancode(k: Key) -> Option<u16> {
     use Key::*;
     Some(match k {
@@ -59,6 +62,25 @@ pub fn mouse_to_driver(win: (usize, usize), mouse: (f32, f32), buf: (usize, usiz
     Some((bx * 640 / bw as i32, by / sy as i32))
 }
 
+/// Built without the native window (the web build): no window can open.
+#[cfg(not(feature = "native"))]
+pub struct Host;
+
+#[cfg(not(feature = "native"))]
+impl Host {
+    pub fn open(_w: usize, _h: usize, _place: Option<(i32, i32, usize, usize)>) -> Host {
+        panic!("eiketsu-rt was built without its native window (feature \"native\"); run headless")
+    }
+    pub fn present(&mut self, _px: &[u32], _w: usize, _h: usize) -> bool {
+        false
+    }
+    pub fn events(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
+    pub fn set_title(&mut self, _title: &str) {}
+}
+
+#[cfg(feature = "native")]
 impl Host {
     /// `place` = (x, y, width, height) for a borderless window at a fixed spot.
     pub fn open(w: usize, h: usize, place: Option<(i32, i32, usize, usize)>) -> Host {

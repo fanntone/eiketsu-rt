@@ -490,8 +490,7 @@ fn emulated_date(m: &Machine) -> [u8; 5] {
 }
 
 fn write_atomic(p: &std::path::Path, b: &[u8]) -> R<()> {
-    let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, b).and_then(|_| std::fs::rename(&tmp, p)).map_err(|e| format!("{}: {e}", p.display()))
+    crate::replace_file(p, b)
 }
 
 /// Save the machine with the slot's current files (state first, then the key

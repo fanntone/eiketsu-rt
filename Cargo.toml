@@ -4,14 +4,34 @@ version = "0.1.0"
 edition = "2021"
 description = "Native DOS runtime for KOEI Sangokushi Eiketsuden (Chinese DOS release): runs the original real-mode code with Rust-implemented DOS, BIOS, VGA and OPL2"
 
+[workspace]
+members = ["web"]
+
+[features]
+default = ["native"]
+# The desktop window (minifb) and audio output (cpal). Off for the web build.
+native = ["dep:minifb", "dep:cpal"]
+
+[[bin]]
+name = "eiketsu-rt"
+required-features = ["native"]
+
 [dependencies]
-minifb = "0.27"
-cpal = "0.15"
+minifb = { version = "0.27", optional = true }
+cpal = { version = "0.15", optional = true }
 encoding_rs = "0.8"
 
 [profile.release]
 opt-level = 3
 debug = 1
+
+# The browser build: small download, no debug info.
+[profile.web]
+inherits = "release"
+debug = 0
+strip = true
+lto = true
+codegen-units = 1
 
 [profile.dev]
 opt-level = 2

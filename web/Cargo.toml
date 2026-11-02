@@ -1,0 +1,12 @@
+[package]
+name = "eiketsu-web"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Browser build of eiketsu-rt (wasm32-wasip1 reactor driven by web/www)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+eiketsu-rt = { path = "..", default-features = false }

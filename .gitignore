@@ -9,3 +9,6 @@ trace.txt
 *.key
 journal/
 savestates/
+
+# browser build output (web/build.sh)
+/web/www/eiketsu_web.wasm

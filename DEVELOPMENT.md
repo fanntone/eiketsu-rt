@@ -39,6 +39,27 @@ MAIN.EXE 載入時在記憶體裡修補（硬碟上的檔案不動；每個原�
 
 關鍵位址、坑與欄位格式都寫在 `src/saveui.rs` 開頭的註解。
 
+## 網頁版（web/）
+
+同一份模擬器編成 `wasm32-wasip1` 的 reactor（`web/src/lib.rs`，對外函式 `eik_start` / `eik_run` / `eik_frame` / `eik_mouse` / `eik_key` / `eik_audio` / `eik_fs_writes`）。
+`web/www/` 是網頁：
+
+- `wasi.js`：自己實作的 WASI preview1（只有 wasm 用到的那些呼叫）加記憶體檔案系統；遊戲資料夾掛在 `/game`。
+  WASI 不能複製檔案控制代碼，所以 `Dos` 的快照是用檔名重新開檔（原生版也走同一條路）。
+- `engine.js`：載入 wasm、包裝成 `run(ms)` / `frame()` / `mouse()` / `key()` / `audio()`。
+- `app.js`：IndexedDB 保存遊戲檔與存檔（看 `eik_fs_writes` 有沒有變）、canvas、觸控／滑鼠／鍵盤、Web Audio。
+- `zip.js`：讀 zip（瀏覽器內建 `DecompressionStream`）、寫 zip（匯出存檔）。
+
+```
+rustup target add wasm32-wasip1
+sh web/build.sh                                   # 產生 web/www/eiketsu_web.wasm
+python -m http.server 8000 --directory web/www    # 用瀏覽器開 http://localhost:8000
+cargo test --release -p eiketsu-web               # web 介面（原生跑）
+node web/www/test.mjs <遊戲資料夾> web/www/eiketsu_web.wasm harness/fixtures/sishui_hall   # 真正的 wasm + wasi.js
+```
+
+push 到 `main` 時，`.github/workflows/pages.yml` 會自動編譯並部署到 GitHub Pages。
+
 ## 命令列
 
 `eiketsu-rt [--game DIR] [--run PROGRAM] [--headless] [--steps N] [--trace] [--shot FILE.png] [--script FILE] [--replay JOURNAL] [--no-journal] [--mute] [--state 快照]`
