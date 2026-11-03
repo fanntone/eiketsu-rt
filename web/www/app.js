@@ -4,6 +4,7 @@
 import { MemFS } from "./wasi.js";
 import { startEngine } from "./engine.js";
 import { readZip, writeZip } from "./zip.js";
+import { fitSize, clampView, zoomAt, nextZoom, picturePoint as toPicture, startView, pageInfo, snapView, swipeView, refit, Touches, HOLD_DELAY } from "./view.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -153,6 +154,7 @@ $("start").addEventListener("click", async () => {
     $("setup").hidden = true;
     $("game").hidden = false;
     fit();
+    setView(startView(stage.clientWidth, stage.clientHeight, base, isTouch));
     requestAnimationFrame(tick);
   } catch (err) {
     console.error(err);
@@ -259,16 +261,45 @@ function draw() {
   ctx2d.putImageData(new ImageData(new Uint8ClampedArray(f.rgba), f.width, f.height), 0, 0);
 }
 
-// Display shape as on the PC: 320-wide modes doubled, 200-line modes doubled.
+// The picture: fitted whole at zoom 1, zoomed by the 🔍 button and pinching;
+// on touch screens cut into pages a one-finger swipe moves between.
+const stage = $("stage");
+const isTouch = matchMedia("(pointer: coarse)").matches;
+let view = { z: 1, x: 0, y: 0 }, base = { w: 640, h: 480 }, laidOut = { w: 0, h: 0 };
 function fit() {
-  const stage = $("stage");
-  const w = shown.w || 640, h = shown.h || 480;
-  const aw = w * (w <= 320 ? 2 : 1), ah = h * (h <= 240 ? 2 : 1);
-  const s = Math.min(stage.clientWidth / aw, stage.clientHeight / ah);
-  canvas.style.width = Math.floor(aw * s) + "px";
-  canvas.style.height = Math.floor(ah * s) + "px";
+  const room = { w: stage.clientWidth, h: stage.clientHeight };
+  if (!room.w || !room.h) return; // hidden
+  const old = base;
+  base = fitSize(room.w, room.h, shown.w || 640, shown.h || 480);
+  const v = laidOut.w ? refit(view, laidOut, old, room, base) : view;
+  laidOut = room;
+  setView(isTouch ? snapView(clampView(v, room.w, room.h, base), room.w, room.h, base) : v);
+}
+function setView(v, animate = false) {
+  view = clampView(v, stage.clientWidth, stage.clientHeight, base);
+  canvas.style.transition = animate ? "left .2s ease-out, top .2s ease-out, width .2s ease-out, height .2s ease-out" : "none";
+  canvas.style.width = base.w * view.z + "px";
+  canvas.style.height = base.h * view.z + "px";
+  canvas.style.left = view.x + "px";
+  canvas.style.top = view.y + "px";
+  $("b-zoom").querySelector(".t").textContent = (Math.round(view.z * 10) / 10).toString() + "×";
+  $("b-zoom").classList.toggle("on", view.z > 1.01);
+  showPages();
+}
+// Dots for the pages, the current one lit.
+function showPages() {
+  const p = pageInfo(view, stage.clientWidth, stage.clientHeight, base);
+  const el = $("pages");
+  el.hidden = p.cols * p.rows <= 1;
+  el.style.gridTemplateColumns = `repeat(${p.cols}, auto)`;
+  el.replaceChildren(...Array.from({ length: p.cols * p.rows }, (_, i) => {
+    const d = document.createElement("i");
+    if (i === p.row * p.cols + p.col) d.className = "on";
+    return d;
+  }));
 }
 addEventListener("resize", fit);
+new ResizeObserver(fit).observe(stage);
 
 function showError(msg) {
   $("err").textContent = msg + (wasmLog.length ? "\n" + wasmLog.join("\n") : "");
@@ -284,13 +315,6 @@ function flash(msg) {
 }
 
 // ---------- input ----------
-function toPicture(e) {
-  const r = canvas.getBoundingClientRect();
-  return {
-    x: Math.floor(((e.clientX - r.left) * (shown.w || 640)) / r.width),
-    y: Math.floor(((e.clientY - r.top) * (shown.h || 480)) / r.height),
-  };
-}
 function queueMouse(x, y, b) {
   const lastItem = queue[queue.length - 1];
   // Coalesce moves with the same buttons.
@@ -309,40 +333,67 @@ function tapKey(sc) {
   queue.push({ kind: "key", sc, down: true }, { kind: "key", sc, down: false });
 }
 
-let touches = 0;
-canvas.addEventListener("pointerdown", (e) => {
+// Mouse goes straight through; touches go through Touches (pinch, two-finger tap).
+const touch = new Touches();
+let pressTimer = 0;
+const stagePoint = (e) => {
+  const r = stage.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+const picturePoint = (sx, sy) => toPicture(view, base, shown.w || 640, shown.h || 480, sx, sy);
+let lastTap = null; // stage point of the last touch, where the 🔍 button zooms
+function act(list) {
+  for (const a of list) {
+    if (a.kind === "right") pushRight();
+    else if (a.kind === "swipe") setView(swipeView(view, a.col, a.row, stage.clientWidth, stage.clientHeight, base), true);
+    else if (a.kind === "pinch") {
+      const v = zoomAt(view, view.z * a.scale, a.cx, a.cy, stage.clientWidth, stage.clientHeight, base);
+      setView({ ...v, x: v.x + a.dx, y: v.y + a.dy });
+    } else {
+      lastTap = { x: a.x, y: a.y };
+      const p = picturePoint(a.x, a.y);
+      if (a.kind === "press") queue.push({ kind: "mouse", x: p.x, y: p.y, b: 0 }, { kind: "mouse", x: p.x, y: p.y, b: 1 });
+      else if (a.kind === "drag") queueMouse(p.x, p.y, 1);
+      else queue.push({ kind: "mouse", x: p.x, y: p.y, b: 0 });
+    }
+  }
+}
+stage.addEventListener("pointerdown", (e) => {
   e.preventDefault();
-  canvas.setPointerCapture(e.pointerId);
-  const p = toPicture(e);
+  stage.setPointerCapture(e.pointerId);
+  const s = stagePoint(e);
   if (e.pointerType === "mouse") {
+    const p = picturePoint(s.x, s.y);
     queueMouse(p.x, p.y, e.buttons & 3);
     return;
   }
-  touches++;
-  if (touches === 2) {
-    // Two-finger tap: right click (cancel) where the cursor is.
-    queue.push({ kind: "mouse", x: cursor.x, y: cursor.y, b: 2 }, { kind: "mouse", x: cursor.x, y: cursor.y, b: 0 });
-    return;
-  }
-  queue.push({ kind: "mouse", x: p.x, y: p.y, b: 0 }, { kind: "mouse", x: p.x, y: p.y, b: 1 });
+  act(touch.down(e.pointerId, s.x, s.y, e.timeStamp));
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => act(touch.timeout(performance.now())), HOLD_DELAY + 5);
 });
-canvas.addEventListener("pointermove", (e) => {
-  const p = toPicture(e);
-  if (e.pointerType === "mouse") queueMouse(p.x, p.y, e.buttons & 3);
-  else if (touches === 1) queueMouse(p.x, p.y, 1);
+stage.addEventListener("pointermove", (e) => {
+  const s = stagePoint(e);
+  if (e.pointerType === "mouse") {
+    const p = picturePoint(s.x, s.y);
+    queueMouse(p.x, p.y, e.buttons & 3);
+  } else act(touch.move(e.pointerId, s.x, s.y, e.timeStamp));
 });
 const up = (e) => {
-  const p = toPicture(e);
+  const s = stagePoint(e);
   if (e.pointerType === "mouse") {
+    const p = picturePoint(s.x, s.y);
     queueMouse(p.x, p.y, e.buttons & 3);
-    return;
-  }
-  if (touches === 1) queue.push({ kind: "mouse", x: p.x, y: p.y, b: 0 });
-  touches = Math.max(0, touches - 1);
+  } else act(touch.up(e.pointerId, s.x, s.y, e.timeStamp));
 };
-canvas.addEventListener("pointerup", up);
-canvas.addEventListener("pointercancel", up);
-canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+stage.addEventListener("pointerup", up);
+stage.addEventListener("pointercancel", up);
+// Mouse wheel / trackpad pinch zooms on computers.
+stage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const s = stagePoint(e);
+  setView(zoomAt(view, view.z * Math.exp(-e.deltaY / 300), s.x, s.y, stage.clientWidth, stage.clientHeight, base));
+}, { passive: false });
+stage.addEventListener("contextmenu", (e) => e.preventDefault());
 
 addEventListener("keydown", (e) => {
   if (!eng || $("game").hidden) return;
@@ -360,9 +411,16 @@ addEventListener("keyup", (e) => {
 });
 
 // Toolbar.
-$("b-right").addEventListener("click", () =>
-  queue.push({ kind: "mouse", x: cursor.x, y: cursor.y, b: 2 }, { kind: "mouse", x: cursor.x, y: cursor.y, b: 0 }),
-);
+function pushRight() {
+  queue.push({ kind: "mouse", x: cursor.x, y: cursor.y, b: 2 }, { kind: "mouse", x: cursor.x, y: cursor.y, b: 0 });
+}
+$("b-right").addEventListener("click", pushRight);
+$("b-zoom").addEventListener("click", () => {
+  const z = nextZoom(view.z);
+  const at = lastTap || { x: stage.clientWidth / 2, y: stage.clientHeight / 2 };
+  const v = z === 1 ? { z: 1, x: 0, y: 0 } : zoomAt(view, z, at.x, at.y, stage.clientWidth, stage.clientHeight, base);
+  setView(isTouch ? snapView(clampView(v, stage.clientWidth, stage.clientHeight, base), stage.clientWidth, stage.clientHeight, base) : v, true);
+});
 $("b-enter").addEventListener("click", () => tapKey(0x1c));
 $("b-password").addEventListener("click", () => {
   tapKey(0x1e);
@@ -371,7 +429,7 @@ $("b-password").addEventListener("click", () => {
 $("b-mute").addEventListener("click", () => {
   muted = !muted;
   if (gain) gain.gain.value = muted ? 0 : 1;
-  $("b-mute").textContent = muted ? "🔇" : "🔊";
+  $("b-mute").querySelector(".i").textContent = muted ? "🔇" : "🔊";
   if (audioCtx) audioCtx.resume();
 });
 $("b-full").addEventListener("click", () => {

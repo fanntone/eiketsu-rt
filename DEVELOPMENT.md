@@ -48,6 +48,7 @@ MAIN.EXE 載入時在記憶體裡修補（硬碟上的檔案不動；每個原�
   WASI 不能複製檔案控制代碼，所以 `Dos` 的快照是用檔名重新開檔（原生版也走同一條路）。
 - `engine.js`：載入 wasm、包裝成 `run(ms)` / `frame()` / `mouse()` / `key()` / `audio()`。
 - `app.js`：IndexedDB 保存遊戲檔與存檔（看 `eik_fs_writes` 有沒有變）、canvas、觸控／滑鼠／鍵盤、Web Audio。
+- `view.js`：畫面在頁面上的位置與縮放、觸控手勢判斷。純邏輯，不碰 DOM。手機一進遊戲放大 2×，畫面切成相鄰重疊至少半個螢幕的幾塊（不超過半個螢幕的選單一定能在某一塊完整看到），單指快滑換塊；輕點＝在手指落點點擊，長按 0.3 秒＝按住拖曳，兩指輕點＝右鍵，兩指捏合＝縮放。遊戲切換解析度或手機轉向時，保持舞台中央對到的畫面位置不變（`refit`）。
 - `zip.js`：讀 zip（瀏覽器內建 `DecompressionStream`）、寫 zip（匯出存檔）。
 
 ```
@@ -55,6 +56,7 @@ rustup target add wasm32-wasip1
 sh web/build.sh                                   # 產生 web/www/eiketsu_web.wasm
 python -m http.server 8000 --directory web/www    # 用瀏覽器開 http://localhost:8000
 cargo test --release -p eiketsu-web               # web 介面（原生跑）
+node web/www/test-view.mjs                          # 版面縮放與觸控手勢（手算黃金值）
 node web/www/test.mjs <遊戲資料夾> web/www/eiketsu_web.wasm harness/fixtures/sishui_hall   # 真正的 wasm + wasi.js
 ```
 

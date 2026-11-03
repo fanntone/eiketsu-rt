@@ -42,19 +42,39 @@
   #have { margin: 0; }
   small { color: var(--muted); }
 
-  /* game */
-  #game { position: fixed; inset: 0; display: flex; flex-direction: column; }
-  #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  /* game: picture in the middle, buttons around it (rails at the thumbs when held sideways) */
+  #game { position: fixed; inset: 0; display: grid; grid-template: "stage" 1fr "left" auto "right" auto / 1fr;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background: #0d0b08; }
+  #stage { grid-area: stage; position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #000;
+    touch-action: none; }
   /* Smooth scaling blends the game's dithered colours the way a monitor does. */
-  #screen { touch-action: none; background: #000; }
-  #bar { display: flex; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); justify-content: center;
-    flex-wrap: wrap; background: #0d0b08; border-top: 1px solid var(--line); }
-  #bar button { padding: 8px 12px; font-size: 15px; }
+  #screen { position: absolute; left: 0; top: 0; background: #000; touch-action: none; }
+  .rail { display: flex; gap: 8px; padding: 8px; justify-content: center; flex-wrap: wrap; }
+  #rail-l { grid-area: left; border-top: 1px solid var(--line); }
+  #rail-r { grid-area: right; padding-top: 0; }
+  .rail button { min-width: 64px; min-height: 48px; padding: 6px 12px; font-size: 16px; line-height: 1.15;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+  .rail button .i { font-size: 20px; line-height: 1; }
+  .rail button .t { font-size: 12px; color: var(--muted); }
+  .rail .big { font-size: 18px; font-weight: 700; }
+  #pages { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); display: grid; gap: 4px;
+    padding: 4px 6px; border-radius: 8px; background: rgba(13,11,8,.55); pointer-events: none; }
+  #pages i { width: 7px; height: 7px; border-radius: 50%; background: rgba(239,230,212,.35); }
+  #pages i.on { background: var(--accent); }
+  #b-zoom.on { border-color: var(--accent); color: var(--accent); }
+  @media (min-width: 700px) and (orientation: portrait), (min-width: 1000px) {
+    #game { grid-template: "stage stage" 1fr "left right" auto / 1fr 1fr; }
+    #rail-l { justify-content: flex-end; } #rail-r { justify-content: flex-start; padding-top: 8px; border-top: 1px solid var(--line); }
+  }
+  /* Held sideways (phones): the picture is height-bound, so the side room holds the buttons. */
   @media (orientation: landscape) and (max-height: 600px) {
-    #game { flex-direction: row; }
-    #bar { flex-direction: column; justify-content: center; border-top: 0; border-left: 1px solid var(--line);
-      padding: 8px calc(6px + env(safe-area-inset-right)) 8px 6px; flex-wrap: nowrap; }
-    #bar button { padding: 8px 10px; font-size: 14px; }
+    #game { grid-template: "left stage right" minmax(0, 1fr) / auto 1fr auto; }
+    .rail { min-height: 0; }
+    .rail { flex-direction: column; flex-wrap: nowrap; padding: 8px 6px; }
+    #rail-l, #rail-r { padding-top: 8px; border: 0; }
+    .rail button { width: 76px; min-height: 0; flex: 0 1 60px; padding: 4px; }
+    #rail-l button { flex-basis: 96px; }
   }
   #speed { position: fixed; top: 6px; left: 8px; color: #ffcf6e; font-size: 12px; pointer-events: none; }
   #toast, #err { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: rgba(20,17,13,.92);
@@ -92,8 +112,9 @@
   <div class="card">
     <h2>怎麼玩</h2>
     <ul>
-      <li><b>點一下</b> = 滑鼠左鍵。<b>兩指點一下</b>或按下方的 <b>「取消」</b> = 右鍵。</li>
-      <li>開頭要「輸入密碼」：按下方的 <b>「密碼」</b> 就會自動通過。</li>
+      <li><b>點一下</b> = 滑鼠左鍵。<b>兩指點一下</b>或按 <b>「取消」</b> = 右鍵。</li>
+      <li>手機一進遊戲會放大到 2×，畫面切成幾塊（下方小圓點標示目前位置）：<b>單指快滑</b>換到上下左右的另一塊。按 <b>🔍</b> 切換 1× / 1.5× / 2× / 3×，也可以兩指捏合縮放。<b>長按</b>＝按住滑鼠拖曳。</li>
+      <li>開頭要「輸入密碼」：按 <b>🔑「密碼」</b> 就會自動通過。</li>
       <li>戰場上「功能」選單裡可以隨時<b>存檔／讀檔</b>；每次我方回合結束會自動存到第 10 格。</li>
       <li>手機建議<b>橫放</b>，並用 Safari 的「分享 → 加入主畫面」，就能全螢幕遊玩。</li>
       <li>存檔存在這個瀏覽器裡。換手機或清除瀏覽器資料前，記得按 <b>「匯出存檔」</b>。</li>
@@ -103,14 +124,17 @@
 </main>
 
 <div id="game" hidden>
-  <div id="stage"><canvas id="screen" width="640" height="480"></canvas></div>
-  <nav id="bar">
-    <button id="b-right">取消</button>
-    <button id="b-enter">Enter</button>
-    <button id="b-password">密碼</button>
-    <button id="b-mute">🔊</button>
-    <button id="b-full">全螢幕</button>
-    <button id="b-export">匯出存檔</button>
+  <nav id="rail-l" class="rail">
+    <button id="b-right" class="big">取消</button>
+    <button id="b-enter" class="big">Enter</button>
+  </nav>
+  <div id="stage"><canvas id="screen" width="640" height="480"></canvas><div id="pages" hidden></div></div>
+  <nav id="rail-r" class="rail">
+    <button id="b-zoom"><span class="i">🔍</span><span class="t">1×</span></button>
+    <button id="b-password"><span class="i">🔑</span><span class="t">密碼</span></button>
+    <button id="b-mute"><span class="i">🔊</span><span class="t">聲音</span></button>
+    <button id="b-full"><span class="i">⛶</span><span class="t">全螢幕</span></button>
+    <button id="b-export"><span class="i">💾</span><span class="t">匯出存檔</span></button>
   </nav>
   <div id="speed"></div>
   <div id="toast" hidden></div>
