@@ -4,6 +4,7 @@
 import { MemFS } from "./wasi.js";
 import { startEngine } from "./engine.js";
 import { readZip, writeZip } from "./zip.js";
+import { pace } from "./pace.js";
 import { fitSize, clampView, zoomAt, nextZoom, picturePoint as toPicture, startView, pageInfo, snapView, swipeView, refit, Touches, HOLD_DELAY } from "./view.js";
 
 const $ = (id) => document.getElementById(id);
@@ -186,17 +187,17 @@ function startAudio() {
 
 const canvas = $("screen");
 const ctx2d = canvas.getContext("2d");
-let last = 0, carry = 0, speedAvg = 1, persisting = false;
+let last = 0, carry = 0, speedAvg = 1, costPerMs = 0, persisting = false;
 // For diagnosis (read from the console / test driver).
 window.eikStats = { frames: 0, gameMs: 0, runMs: 0, drawMs: 0 };
 
 function tick(now) {
   if (!last) last = now;
-  const dt = Math.min(now - last, 100);
+  const dt = now - last;
   last = now;
-  carry += dt;
-  const ms = Math.floor(carry);
-  carry -= ms;
+  const p = pace(carry, dt, costPerMs);
+  const ms = p.ms;
+  carry = p.carry;
   applyInput();
   if (ms > 0) {
     const t0 = performance.now();
@@ -210,7 +211,9 @@ function tick(now) {
     const cost = performance.now() - t0;
     eikStats.gameMs += ms;
     eikStats.runMs += cost;
-    speedAvg = speedAvg * 0.95 + Math.min(2, dt / Math.max(cost, dt)) * 0.05;
+    costPerMs = costPerMs ? costPerMs * 0.8 + (cost / ms) * 0.2 : cost / ms;
+    // Game time run against real time passed (below 1 when the device can't keep up).
+    if (dt > 0) speedAvg = speedAvg * 0.95 + Math.min(1, ms / Math.min(dt, 100)) * 0.05;
     if (state === "exited") {
       showError("遊戲已結束。重新整理頁面就能再玩。");
       return;
@@ -250,15 +253,18 @@ async function persist() {
 }
 
 let shown = { w: 0, h: 0 };
+let image = null; // one ImageData, refilled each frame (no 1.2 MB garbage a frame)
 function draw() {
   const f = eng.frame();
   if (f.width !== shown.w || f.height !== shown.h) {
     canvas.width = f.width;
     canvas.height = f.height;
     shown = { w: f.width, h: f.height };
+    image = new ImageData(f.width, f.height);
     fit();
   }
-  ctx2d.putImageData(new ImageData(new Uint8ClampedArray(f.rgba), f.width, f.height), 0, 0);
+  image.data.set(f.rgba);
+  ctx2d.putImageData(image, 0, 0);
 }
 
 // The picture: fitted whole at zoom 1, zoomed by the 🔍 button and pinching;

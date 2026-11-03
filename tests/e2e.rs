@@ -374,3 +374,44 @@ fn battle_menu_saves_and_loads_any_time() {
     assert_eq!(m.checks.len(), 5, "a screen checkpoint was not reached");
     assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
+
+/// Screens that wait for the player (the title menu, the battlefield, the
+/// battle's 功能 menu) spend most
+/// of their instructions polling: those are skipped, not run (see
+/// Machine::spin_check). The game itself is unchanged — every golden hash in this
+/// suite is the proof; this checks the skipping happens at all.
+#[test]
+fn idle_screens_skip_busy_waits() {
+    let ips = eiketsu_rt::IPS_PER_MS;
+    let share = |m: &mut Machine, from_ms: u64, to_ms: u64| {
+        m.cfg.max_steps = Some(from_ms * ips);
+        assert!(matches!(m.run(), Stop::Budget));
+        let (s0, k0) = (m.cpu.steps, m.skipped);
+        m.cfg.max_steps = Some(to_ms * ips);
+        assert!(matches!(m.run(), Stop::Budget));
+        (m.skipped - k0) as f64 / (m.cpu.steps - s0) as f64
+    };
+
+    let game = game_copy("idle_title");
+    let script = parse("9000 key A\n9400 key ENTER\n", &root()).unwrap();
+    let mut m = Machine::new(config(game, script, None, None, 0)).unwrap();
+    let title = share(&mut m, 14_000, 24_000);
+    assert!(title >= 0.5, "title menu: only {:.0}% of its waiting skipped", title * 100.0);
+
+    let game = game_copy_sishui("idle_battle");
+    let mut text = String::from(
+        "9000 key A\n9400 key ENTER\n14000 click 320 211\n16500 click 220 200\n18000 click 350 231\n\
+         25000 click 222 238\n26500 click 222 238\n29000 click 382 152\n32000 click 222 231\n\
+         35000 click 280 316\n37000 click 290 231\n",
+    );
+    for i in 0..18 {
+        text.push_str(&format!("{} click 320 300\n", 40_000 + i * 2_500));
+    }
+    let mut m = Machine::new(config(game, parse(&text, &root()).unwrap(), None, None, 0)).unwrap();
+    let battle = share(&mut m, 86_000, 96_000);
+    assert!(battle >= 0.5, "battlefield: only {:.0}% of its waiting skipped", battle * 100.0);
+    // The 功能 menu open: its loop checks one of its items per poll.
+    m.cfg.script = parse("96000 click 45 55\n", &root()).unwrap();
+    let menu = share(&mut m, 97_000, 101_000);
+    assert!(menu >= 0.5, "功能 menu: only {:.0}% of its waiting skipped", menu * 100.0);
+}

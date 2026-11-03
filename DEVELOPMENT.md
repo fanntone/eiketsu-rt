@@ -27,6 +27,18 @@ REKO3.COM（原版啟動器：EXEC 三個常駐程式，再依回傳碼在 OPEN 
 遊戲資料夾（有 `REKO3.COM` 的那一層）就是 C: 磁碟的根目錄。`assets/` 是標準 VGA BIOS 的 8×8 / 8×16 字型
 （MAIN 直接讀 F000:FA6E 的 ROM 字型畫 ASCII）。
 
+## 跳過空轉（Machine::spin_check）
+
+時鐘是「指令數 ÷ 25,000」（每秒 2,500 萬條），但遊戲等玩家操作時，絕大部分指令都在輪詢：透過 `int86()` 呼叫 `INT 33h` 問滑鼠、查鍵盤緩衝區、向驅動程式問計數器。手機跑不動每秒 2,500 萬條，所以這些空轉被**精確地跳過**：
+
+- 監看一個軟體中斷點。回到同一點時（可能要轉幾圈：選單一圈檢查一個項目，最多 `SPIN_MAX_PASSES` 圈），如果暫存器完全相同、這段期間沒有任何「硬事件」（`Mem::epoch`：I/O 埠、顯示記憶體、其他中斷、白名單外的 BIOS 服務、輸入），而且改動過的 RAM 位元組（`Mem::wlog`）都回到起點的值，就代表這一圈是純空轉。
+- 這時把時鐘往前撥整數圈，停在下一個外界會改變的時間點之前（下次計時器中斷、下一個腳本或日誌事件、這次 `run` 的預算），落點就是逐條執行也會到的那一步，狀態完全相同。原生視窗版需要定期處理視窗與速度控制，所以只跳到下一次 `service()`。
+- 唯一的例外：一個每圈 +1、除了遞增本身沒有被讀取的字組（戰場等待迴圈的計數器）。確認一圈內它的兩個位元組各只被讀一次之後，跳過時把它加上跳過的圈數。
+- 驗收：所有黃金值和日誌重播都和沒有跳過時完全一樣；`idle_screens_skip_busy_waits` 檢查標題選單、戰場、戰場功能選單閒置時至少一半的指令被跳過（實測標題 / 選單約 90%）。故意讓落點偏一步，`battle_menu_saves_and_loads_any_time` 就會失敗。
+- 實測（Chrome，手機版面）：標題選單模擬成本從每 1ms 遊戲時間 0.57ms 降到 0.10ms；CPU 降速 4 倍（約手機）時從每秒 1.8 幀、遊戲速度 18%，變成 60 幀、100%。
+
+量效能時注意：這台 i5-13400 是 P-core + E-core 混合架構，Windows 10 會把瀏覽器隨機排到 E-core，同一個程式就會慢一倍（0.56 vs 1.12ms）。比較數據要固定核心（`ProcessorAffinity`），或每次重開瀏覽器多量幾次。
+
 ## 存檔畫面擴充（src/saveui.rs）
 
 MAIN.EXE 載入時在記憶體裡修補（硬碟上的檔案不動；每個原始位元組都對上才會修補，所以別的版本只會維持原樣）：
@@ -49,6 +61,7 @@ MAIN.EXE 載入時在記憶體裡修補（硬碟上的檔案不動；每個原�
 - `engine.js`：載入 wasm、包裝成 `run(ms)` / `frame()` / `mouse()` / `key()` / `audio()`。
 - `app.js`：IndexedDB 保存遊戲檔與存檔（看 `eik_fs_writes` 有沒有變）、canvas、觸控／滑鼠／鍵盤、Web Audio。
 - `view.js`：畫面在頁面上的位置與縮放、觸控手勢判斷。純邏輯，不碰 DOM。手機一進遊戲放大 2×，畫面切成相鄰重疊至少半個螢幕的幾塊（不超過半個螢幕的選單一定能在某一塊完整看到），單指快滑換塊；輕點＝在手指落點點擊，長按 0.3 秒＝按住拖曳，兩指輕點＝右鍵，兩指捏合＝縮放。遊戲切換解析度或手機轉向時，保持舞台中央對到的畫面位置不變（`refit`）。
+- `pace.js`：每一幀要跑多少遊戲時間。跟得上就照實際經過的時間跑；跟不上時每幀最多花 25ms 模擬，讓遊戲稍微變慢但畫面維持約 30～40 幀，而不是一次補跑 100ms 變成每秒 8 幀。（實測：這台 i5-13400 在 P-core 上每 1ms 遊戲時間要 0.56ms，被 Windows 10 排到 E-core 時要 1.12ms，就跟不上了。）
 - `zip.js`：讀 zip（瀏覽器內建 `DecompressionStream`）、寫 zip（匯出存檔）。
 
 ```
@@ -56,6 +69,7 @@ rustup target add wasm32-wasip1
 sh web/build.sh                                   # 產生 web/www/eiketsu_web.wasm
 python -m http.server 8000 --directory web/www    # 用瀏覽器開 http://localhost:8000
 cargo test --release -p eiketsu-web               # web 介面（原生跑）
+node web/www/test-pace.mjs                          # 每幀的遊戲時間（手算黃金值）
 node web/www/test-view.mjs                          # 版面縮放與觸控手勢（手算黃金值）
 node web/www/test.mjs <遊戲資料夾> web/www/eiketsu_web.wasm harness/fixtures/sishui_hall   # 真正的 wasm + wasi.js
 ```

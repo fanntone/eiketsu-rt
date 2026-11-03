@@ -196,6 +196,9 @@ impl Pit {
     }
 }
 
+/// The most RAM bytes one round of a polling loop may change (Mem::wlog).
+pub const WLOG_MAX: usize = 256;
+
 #[derive(Clone)]
 pub struct Mem {
     pub ram: Vec<u8>,
@@ -219,6 +222,20 @@ pub struct Mem {
     pub rwatch: Vec<u32>,
     pub pc: (u16, u32),
     pub rwatch_hits: Vec<(u32, u16, u32)>,
+    /// Counts everything the CPU does that could change what it sees next, other
+    /// than RAM writes while `wlog_on`: any video memory access, any port I/O.
+    /// The machine adds its own (interrupts, host services). See Machine::spin_check.
+    /// Not saved: only differences count.
+    pub epoch: u64,
+    /// While on: the RAM bytes changed since the polling point being watched,
+    /// each once, with the value it had then. Full (WLOG_MAX): off, and counted
+    /// in `epoch`. `wmark` has a bit set for each byte in the log.
+    pub wlog: Vec<(u32, u8)>,
+    pub wlog_on: bool,
+    wmark: Vec<u64>,
+    /// Reads of the word at `cwatch` are counted in `creads` (u32::MAX: none).
+    pub cwatch: u32,
+    pub creads: u32,
 }
 
 impl Mem {
@@ -241,16 +258,26 @@ impl Mem {
             rwatch: Vec::new(),
             pc: (0, 0),
             rwatch_hits: Vec::new(),
+            epoch: 0,
+            wlog: Vec::new(),
+            wlog_on: false,
+            wmark: vec![0; (MEM_SIZE + 0x10000) / 64 + 1],
+            cwatch: u32::MAX,
+            creads: 0,
         }
     }
 
     #[inline]
     pub fn r8(&mut self, a: u32) -> u8 {
+        if a.wrapping_sub(self.cwatch) < 2 {
+            self.creads += 1;
+        }
         if !self.rwatch.is_empty() && self.rwatch.contains(&a) && self.rwatch_hits.len() < 4000 {
             self.rwatch_hits.push((a, self.pc.0, self.pc.1));
         }
         let a = a as usize;
         if a >= 0xa0000 && a < 0xb0000 && self.vga.claims(a as u32) {
+            self.epoch += 1; // loads the latches
             return self.vga.read(a as u32);
         }
         self.ram[a]
@@ -261,6 +288,7 @@ impl Mem {
         if a >= 0xa0000 {
             if a < 0xb0000 {
                 if self.vga.claims(a as u32) {
+                    self.epoch += 1;
                     self.vga.write(a as u32, v);
                 }
                 return;
@@ -272,7 +300,21 @@ impl Mem {
                 self.vga.dirty += 1;
             }
         }
-        self.ram[a] = v;
+        let old = self.ram[a];
+        if old != v {
+            self.ram[a] = v;
+            if !self.wlog_on {
+                self.epoch += 1;
+            } else if self.wmark[a >> 6] & 1 << (a & 63) == 0 {
+                if self.wlog.len() < WLOG_MAX {
+                    self.wmark[a >> 6] |= 1 << (a & 63);
+                    self.wlog.push((a as u32, old));
+                } else {
+                    self.wlog_on = false;
+                    self.epoch += 1;
+                }
+            }
+        }
     }
     pub fn r16(&mut self, a: u32) -> u16 {
         self.r8(a) as u16 | (self.r8(a + 1) as u16) << 8
@@ -287,6 +329,15 @@ impl Mem {
     pub fn w32(&mut self, a: u32, v: u32) {
         self.w16(a, v as u16);
         self.w16(a + 2, (v >> 16) as u16);
+    }
+
+    /// Start a new write log (Mem::wlog).
+    pub fn wlog_restart(&mut self) {
+        for &(a, _) in &self.wlog {
+            self.wmark[a as usize >> 6] &= !(1 << (a & 63));
+        }
+        self.wlog.clear();
+        self.wlog_on = true;
     }
 
     /// Plain RAM access for the host (no device side effects).
@@ -312,6 +363,7 @@ impl Mem {
     pub fn kbd_pump(&mut self) {
         if !self.kbd_full {
             if let Some(s) = self.kbd_queue.pop_front() {
+                self.epoch += 1;
                 self.kbd_data = s;
                 self.kbd_full = true;
                 self.pic.raise(1);
@@ -330,6 +382,8 @@ impl Mem {
         if sz == 2 {
             return self.inp(port, 1) | self.inp(port + 1, 1) << 8;
         }
+        // Ports read time-dependent state (timers, retrace) or change it (keyboard).
+        self.epoch += 1;
         let v = match port {
             0x20 | 0x21 => self.pic.inp(port == 0x20),
             0xa0 | 0xa1 => self.pic2.inp(port == 0xa0),
@@ -377,6 +431,7 @@ impl Mem {
             return;
         }
         let v = v as u8;
+        self.epoch += 1;
         if self.trace_ports {
             eprintln!("[out] {port:04x} <- {v:02x}");
         }

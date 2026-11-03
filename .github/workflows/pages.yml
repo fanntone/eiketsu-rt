@@ -25,7 +25,7 @@ jobs:
       - name: Build the wasm
         run: sh web/build.sh
       - name: Keep only the site
-        run: rm -f web/www/test.mjs web/www/test-view.mjs web/www/package.json
+        run: rm -f web/www/test.mjs web/www/test-view.mjs web/www/test-pace.mjs web/www/package.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/www

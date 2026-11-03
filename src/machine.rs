@@ -109,6 +109,10 @@ pub struct Machine {
     /// EIKETSU_BREAK=seg:off,seg:off: print the registers whenever one is reached.
     dbg_break: Vec<(u16, u16)>,
     dbg_trace: Option<std::io::BufWriter<std::fs::File>>,
+    /// The polling point being watched (spin_check).
+    spin: Option<SpinWatch>,
+    /// Steps not executed because a polling loop was skipped (spin_check).
+    pub skipped: u64,
     pub tty: Vec<u8>,
     journal_file: Option<std::fs::File>,
     /// Every journal line, also kept in memory so snapshots can roll it back.
@@ -171,6 +175,8 @@ impl Machine {
             history: [(0, 0); 64],
             dbg_dump: std::env::var("EIKETSU_DUMP").ok().and_then(|v| { let (a, b) = v.split_once(',')?; Some((a.parse().ok()?, b.parse().ok()?)) }),
             dbg_trace: None,
+            spin: None,
+            skipped: 0,
             dbg_break: std::env::var("EIKETSU_BREAK").ok().map_or(Vec::new(), |v| v.split(',').filter_map(|s| {
                 let (a, b) = s.trim().split_once(':')?;
                 Some((u16::from_str_radix(a, 16).ok()?, u16::from_str_radix(b, 16).ok()?))
@@ -377,6 +383,8 @@ impl Machine {
     }
 
     pub fn run(&mut self) -> Stop {
+        // The host may have changed anything since the last run.
+        self.mem.epoch += 1;
         loop {
             if let Some(s) = self.stop.take() {
                 return s;
@@ -388,7 +396,7 @@ impl Machine {
             if steps >= self.next_service {
                 // A fixed 2000-step grid (kept across run() calls and snapshots), so
                 // input lands on the same steps when a journal is replayed.
-                self.next_service = steps - steps % 2000 + 2000;
+                self.next_service = steps - steps % SERVICE_STEPS + SERVICE_STEPS;
                 if let Err(e) = self.service() {
                     return Stop::Error(e);
                 }
@@ -405,15 +413,18 @@ impl Machine {
                     self.mem.pit.next_irq0 = steps + p;
                 }
                 self.mem.pic.raise(0);
+                self.mem.epoch += 1;
             }
             if self.cpu.fl & IF != 0 && !self.cpu.int_shadow {
                 if let Some(irq) = self.mem.pic.pending() {
                     self.mem.pic.ack(irq);
                     let v = self.mem.pic.base + irq;
+                    self.mem.epoch += 1;
                     self.do_int(v);
                 }
             }
             if self.mouse.pending != 0 && self.cpu.fl & IF != 0 && !self.cpu.int_shadow && self.mouse.saved.is_none() {
+                self.mem.epoch += 1;
                 self.mouse_event();
             }
             self.cpu.int_shadow = false;
@@ -459,14 +470,21 @@ impl Machine {
             }
             match r {
                 Ok(()) => {}
-                Err(Exit::Int(n)) => self.do_int(n),
+                Err(Exit::Int(n)) => {
+                    self.spin_check(n);
+                    self.do_int(n)
+                }
                 Err(Exit::Callback(n)) => {
                     if let Err(e) = self.callback(n) {
                         return Stop::Error(e);
                     }
                 }
-                Err(Exit::Halt) => self.idle(),
+                Err(Exit::Halt) => {
+                    self.mem.epoch += 1;
+                    self.idle()
+                }
                 Err(Exit::DivideError) => {
+                    self.mem.epoch += 1;
                     self.cpu.ip = self.cpu.op_ip;
                     self.do_int(0);
                 }
@@ -662,6 +680,7 @@ impl Machine {
 
     // ---------- input ----------
     pub fn apply_event(&mut self, e: Event) {
+        self.mem.epoch += 1; // input: what polling loops wait for
         match e {
             Event::Close => self.stop = Some(Stop::Closed),
             Event::Key { sc, down } => {
@@ -852,6 +871,7 @@ impl Machine {
     fn run_script(&mut self) -> R<()> {
         let now = self.now_ms();
         while self.cfg.script.first().map_or(false, |e| e.ms <= now) {
+            self.mem.epoch += 1;
             let ev = self.cfg.script.remove(0);
             match ev.action {
                 ScriptAction::Mouse(..) | ScriptAction::Key(..) => {
@@ -885,8 +905,161 @@ impl Machine {
         Ok(())
     }
 
+    /// Busy-wait skipping. The game polls in loops: the mouse through INT 33h,
+    /// the keyboard buffer, a driver's tick counter. One software interrupt in
+    /// such a loop is watched. Coming back to it (maybe after a few passes: a
+    /// loop that checks one menu item per poll; see SPIN_MAX_PASSES) with every
+    /// register the same, no other event in between (Mem::epoch: no port I/O, no
+    /// video memory, no other interrupt or host service) and every RAM byte the
+    /// round changed back to its value at the start (Mem::wlog), the loop will go
+    /// round exactly the same way until something outside it changes: the next
+    /// timer interrupt, the next host service (input), the end of the run. Whole
+    /// rounds up to there are skipped: the clock lands on a step the loop really
+    /// reaches, in the state it really has, so the game runs exactly as if every
+    /// instruction had executed.
+    ///
+    /// One exception to "back to the start": a word the loop only counts up by
+    /// one a round and reads for nothing else (the battlefield's wait loop counts
+    /// its rounds into a local it never reads). Confirmed over a round in which
+    /// its two bytes are each read once (the increment's own read), it is moved on
+    /// by the rounds skipped. A loop that reads the count, compares it and then
+    /// overwrites the register before the poll would be missed by that check;
+    /// the screen checks and journal replays of the e2e suite guard against it.
+    fn spin_check(&mut self, n: u8) {
+        let here = Spin { r: self.cpu.r, ip: self.cpu.ip, s: self.cpu.s, fl: self.cpu.fl, n };
+        let Some(w) = &self.spin else { return self.spin_watch(here) };
+        let quiet = w.epoch == self.mem.epoch && self.mem.wlog_on && !self.cpu.int_shadow && self.mouse.pending == 0;
+        let young = self.cpu.steps - w.at < SPIN_WATCH_STEPS;
+        if !w.site.same_site(&here) {
+            // Another interrupt inside the round: keep watching.
+            if !(quiet && young) {
+                self.spin_watch(here);
+            }
+            return;
+        }
+        if quiet && w.site == here {
+            match self.round_left() {
+                Left::Nothing => {
+                    let round = self.cpu.steps - w.at;
+                    self.skip_rounds(round);
+                    return self.spin_watch(here);
+                }
+                Left::Counter(a, v) => {
+                    let creads = self.mem.creads;
+                    let start = |x: u32| self.mem.wlog.iter().find(|e| e.0 == x).map_or(self.mem.ram[x as usize], |e| e.1);
+                    let s0 = u16::from_le_bytes([start(a), start(a + 1)]);
+                    let w = self.spin.as_mut().unwrap();
+                    match w.counter {
+                        Some((ca, last, at)) if ca == a && v == last.wrapping_add(1) && creads == 2 => {
+                            let round = self.cpu.steps - at;
+                            let k = self.skip_rounds(round);
+                            self.mem.wr16(a, v.wrapping_add(k as u16));
+                            return self.spin_watch(here);
+                        }
+                        // Up by one each pass so far? Then confirm over the next round.
+                        None if v.wrapping_sub(s0) == w.passes as u16 + 1 => {
+                            w.counter = Some((a, v, self.cpu.steps));
+                            w.passes += 1;
+                            self.mem.cwatch = a;
+                            self.mem.creads = 0;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                Left::Other => {}
+            }
+        }
+        let w = self.spin.as_mut().unwrap();
+        if quiet && young && w.passes < SPIN_MAX_PASSES && w.counter.is_none() {
+            // Not back where it started yet (a loop going over a few items, one
+            // per poll): keep watching. Not back after SPIN_MAX_PASSES: the start
+            // was not in the cycle (say, stack bytes an interrupt handler left
+            // behind that the loop never writes back): start again from here.
+            w.passes += 1;
+            return;
+        }
+        self.spin_watch(here)
+    }
+
+    /// Watch the polling point the CPU is at from here.
+    fn spin_watch(&mut self, here: Spin) {
+        self.spin = Some(SpinWatch { site: here, epoch: self.mem.epoch, at: self.cpu.steps, passes: 0, counter: None });
+        self.mem.wlog_restart();
+        self.mem.cwatch = u32::MAX;
+    }
+
+    /// Skip whole rounds of `round` steps up to the next outside change; how many.
+    fn skip_rounds(&mut self, round: u64) -> u64 {
+        let mut until = self.mem.pit.next_irq0.min(self.quiet_until());
+        if let Some(b) = self.cfg.max_steps {
+            until = until.min(b);
+        }
+        if round == 0 || until <= self.cpu.steps {
+            return 0;
+        }
+        let k = (until - self.cpu.steps) / round;
+        self.cpu.steps += k * round;
+        self.skipped += k * round;
+        // The host services passed over did nothing (quiet_until).
+        let s = self.cpu.steps;
+        if self.next_service < s {
+            self.next_service = s.div_ceil(SERVICE_STEPS) * SERVICE_STEPS;
+        }
+        k
+    }
+
+    /// What of RAM is not back to its value at the start of the watch.
+    fn round_left(&self) -> Left {
+        let mut moved = self.mem.wlog.iter().filter(|&&(a, old)| self.mem.ram[a as usize] != old).map(|e| e.0);
+        let Some(a) = moved.next() else { return Left::Nothing };
+        let b = moved.next();
+        if moved.next().is_some() {
+            return Left::Other;
+        }
+        // One word: its low byte changed (+1 always does), maybe its high one.
+        let (lo, hi) = match b {
+            None => (a, None),
+            Some(b) => (a.min(b), Some(a.max(b))),
+        };
+        if hi.map_or(false, |h| h != lo + 1) {
+            return Left::Other;
+        }
+        Left::Counter(lo, self.mem.rd16(lo))
+    }
+
+    /// Until when the host services (service()) are sure to do nothing: no
+    /// window or control port to poll, no battle log, no key waiting, and the
+    /// next scripted or replayed event not due yet. Otherwise the next one.
+    fn quiet_until(&self) -> u64 {
+        if self.host.is_some() || self.control.is_some() || self.blog.is_some() || !self.mem.kbd_queue.is_empty() {
+            return self.next_service;
+        }
+        let script = self.cfg.script.first().map_or(u64::MAX, |e| e.ms.saturating_mul(IPS_PER_MS));
+        let replay = self.replay.front().map_or(u64::MAX, |(s, _)| *s);
+        script.min(replay)
+    }
+
+
+    /// Host services that only read state that changes by itself never (only
+    /// through what Mem::epoch already counts): polling them keeps a loop pure.
+    fn pure_service(&self, n: u8) -> bool {
+        if self.cpu.s[CS] != BIOS_SEG || crate::saveui::owns_bios_callback(self.cpu.op_ip as u16) || self.cpu.op_ip == STUB_MOUSE as u32 {
+            return false;
+        }
+        match n {
+            0x33 => self.cpu.r[EAX] as u16 == 0x03,             // mouse position and buttons
+            0x16 => matches!(self.ah() & 0xef, 0x01 | 0x02),     // key waiting? shift state
+            0x1a => self.ah() == 0 && self.mem.ram[0x470] == 0, // tick count (clears a clear flag)
+            _ => false,
+        }
+    }
+
     // ---------- host services ----------
     fn callback(&mut self, n: u8) -> R<()> {
+        if !self.pure_service(n) {
+            self.mem.epoch += 1;
+        }
         if self.cpu.s[CS] != BIOS_SEG || crate::saveui::owns_bios_callback(self.cpu.op_ip as u16) {
             // Hooks patched into the game's own code (see saveui.rs).
             return crate::saveui::hook(self, n);
@@ -1298,6 +1471,51 @@ impl Machine {
     }
 }
 
+/// The CPU at a polling point: a software interrupt (see Machine::spin_check).
+#[derive(PartialEq)]
+struct Spin {
+    r: [u32; 8],
+    ip: u32,
+    s: [u16; 6],
+    fl: u32,
+    n: u8,
+}
+
+impl Spin {
+    fn same_site(&self, o: &Spin) -> bool {
+        self.s[CS] == o.s[CS] && self.ip == o.ip && self.n == o.n
+    }
+}
+
+struct SpinWatch {
+    site: Spin,
+    epoch: u64,
+    at: u64,
+    /// Times the polling point was reached again without being back at the start.
+    passes: u32,
+    /// A round counter being confirmed: its address, value and step at the last pass.
+    counter: Option<(u32, u16, u64)>,
+}
+
+/// RAM not back to its value at the start of a watch (Machine::round_left).
+enum Left {
+    Nothing,
+    /// Only the word at this address, now holding this value.
+    Counter(u32, u16),
+    Other,
+}
+
+/// Rounds of up to this many polls are found (a loop checking one menu item per
+/// poll: the title menu's 4, the battle 功能 menu's 10).
+const SPIN_MAX_PASSES: u32 = 24;
+
+/// Host services (input, scripts, replay, the window) run every this many steps.
+const SERVICE_STEPS: u64 = 2000;
+
+/// A watched polling point not reached again within this many steps is
+/// dropped for the next one (it was not in a loop).
+const SPIN_WATCH_STEPS: u64 = 50_000;
+
 pub fn fnv(b: &[u8]) -> u64 {
     let mut x = 0xcbf2_9ce4_8422_2325u64;
     for &c in b {
@@ -1371,6 +1589,9 @@ impl Machine {
     }
 
     pub fn restore(&mut self, s: &Snapshot) {
+        // A different machine from here: forget the polling point being watched.
+        self.spin = None;
+        self.mem.epoch += 1;
         self.saveui_screen = s.saveui_screen.clone();
         self.cpu = s.cpu.clone();
         self.mem = s.mem.clone();
@@ -1507,6 +1728,9 @@ impl Machine {
     }
 
     pub fn load_state(&mut self, path: &std::path::Path) -> R<()> {
+        // A different machine from here: forget the polling point being watched.
+        self.spin = None;
+        self.mem.epoch += 1;
         let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut r = crate::ser::R::new(&b);
         // Version 1 (the battle log's and bot's older states) lacks the OPL registers.

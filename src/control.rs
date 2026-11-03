@@ -61,6 +61,7 @@ impl Machine {
             if BufReader::new(&s).read_line(&mut line).is_err() {
                 continue;
             }
+            self.mem.epoch += 1;
             match self.command(line.trim()) {
                 Ok(Reply::After(ms)) => c.waiting.push((now + ms, s)),
                 Ok(Reply::Now(msg)) => reply(s, &msg),
